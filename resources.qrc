@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/plugins/layer_grid_view" >
+        <file>icon.png</file>
+    </qresource>
+</RCC>
