@@ -23,7 +23,9 @@
 """
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QWidget, QAction, QLabel, QVBoxLayout, QGridLayout, QScrollArea, QSlider
+from qgis.core import Qgis, QgsProject
+from qgis.gui import QgsMapCanvas
 # Initialize Qt resources from file resources.py
 from .resources import *
 
@@ -45,6 +47,11 @@ class LayerGridView:
         """
         # Save reference to the QGIS interface
         self.iface = iface
+        self.slider = None
+        self.canvases = []
+        self.layers = []
+        self.layer_ids = []
+        self.current_layer_id = None
 
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
@@ -207,26 +214,104 @@ class LayerGridView:
         del self.toolbar
 
     #--------------------------------------------------------------------------
+    def updateGrid(self, layers):
+        try:
+            # Clear existing widgets from the layout
+            for i in reversed(range(self.layout.count())):
+                widget = self.layout.itemAt(i).widget()
+                if widget is not None:
+                    self.layout.removeWidget(widget)
+                    widget.setParent(None)
+
+            self.canvases = []
+
+            # Add sorted layers to layout
+            row = 0
+            col = 0
+            for layer in layers:
+                label = QLabel(layer.name())
+                label.setStyleSheet("font-size: 12px;")
+                label.setAlignment(Qt.AlignCenter)
+                canvas = QgsMapCanvas()
+                canvas.setCanvasColor(Qt.gray)
+                canvas.setExtent(layer.extent())
+                canvas.setLayers([layer])
+
+                self.canvases.append(canvas)
+
+                self.layout.addWidget(label, row, col)
+                self.layout.addWidget(canvas, row + 1, col)
+
+                col += 1
+                if col > 2:
+                    col = 0
+                    row += 2
+
+        except Exception as e:
+            msg = self.iface.messageBar().createMessage("GRID", f"Error -> {e}")
+            self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
+
+    def sync_zoom(self):
+        main_canvas =  self.iface.mapCanvas()
+        extent = main_canvas.extent()
+        if self.canvases:
+            for canvas in self.canvases:
+                canvas.setExtent(extent)
+                canvas.refresh()
+
+    def updateLayerVisibility(self):
+        try:
+            index = self.slider.value() - 1
+            if self.current_layer_id:
+                QgsProject.instance().layerTreeRoot().findLayer(
+                    self.current_layer_id
+                ).setItemVisibilityChecked(False)
+
+            self.current_layer_id = self.layer_ids[index]
+            layer = QgsProject.instance().layerTreeRoot().findLayer(self.current_layer_id)
+            layer.setItemVisibilityChecked(True)
+        except Exception as e:
+            msg = self.iface.messageBar().createMessage("updateLayerVisibility", f"Error -> {e}")
+            self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
+            pass
 
     def run(self):
-        """Run method that loads and starts the plugin"""
-
         if not self.pluginIsActive:
             self.pluginIsActive = True
 
-            #print "** STARTING LayerGridView"
-
-            # dockwidget may not exist if:
-            #    first run of plugin
-            #    removed on close (see self.onClosePlugin method)
-            if self.dockwidget == None:
-                # Create the dockwidget (after translation) and keep reference
+            if self.dockwidget is None:
                 self.dockwidget = LayerGridViewDockWidget()
 
-            # connect to provide cleanup on closing of dockwidget
             self.dockwidget.closingPlugin.connect(self.onClosePlugin)
 
-            # show the dockwidget
-            # TODO: fix to allow choice of dock location
+            self.layers = list(QgsProject.instance().mapLayers().values())
+
+            for layer in self.layers:
+                self.layer_ids.append(layer.id())
+
+            self.slider = QSlider(Qt.Horizontal)
+            self.slider.setTickInterval(1)
+            self.slider.setValue(0)
+            self.slider.setMaximum(len(self.layers))
+            self.slider.valueChanged.connect(self.updateLayerVisibility)
+
+            contentWidget = QWidget()
+            contentLayout = QVBoxLayout(contentWidget)
+            self.layout = QGridLayout()  # This layout will contain your grid
+
+            contentLayout.addWidget(self.slider)
+            contentLayout.addLayout(self.layout)  # Assuming updateGrid will populate this
+
+            self.scrollArea = QScrollArea()
+            self.scrollArea.setWidgetResizable(True)
+            self.scrollArea.setWidget(contentWidget)
+
+            self.dockwidget.setWidget(self.scrollArea)
+
+            # Connect the signal
+            self.iface.mapCanvas().extentsChanged.connect(self.sync_zoom)
+
+            self.updateGrid(self.layers)  # This should populate 'self.layout'
+
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
             self.dockwidget.show()
