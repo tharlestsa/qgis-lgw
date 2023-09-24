@@ -28,6 +28,7 @@ from qgis.core import Qgis, QgsProject
 from qgis.gui import QgsMapCanvas
 # Initialize Qt resources from file resources.py
 from .resources import *
+from .canvas import  CustomMapCanvas
 
 # Import the code for the DockWidget
 from .layer_grid_view_dockwidget import LayerGridViewDockWidget
@@ -224,7 +225,8 @@ class LayerGridView:
                     widget.setParent(None)
 
             self.canvases = []
-
+            main_canvas = self.iface.mapCanvas()
+            extent = main_canvas.extent()
             # Add sorted layers to layout
             row = 0
             col = 0
@@ -232,10 +234,17 @@ class LayerGridView:
                 label = QLabel(layer.name())
                 label.setStyleSheet("font-size: 12px;")
                 label.setAlignment(Qt.AlignCenter)
-                canvas = QgsMapCanvas()
+                canvas = CustomMapCanvas()
                 canvas.setCanvasColor(Qt.gray)
-                canvas.setExtent(layer.extent())
+                canvas.setExtent(extent)
                 canvas.setLayers([layer])
+                canvas.refresh()
+                canvas.repaint()
+
+                if not layer.isValid():
+                    print(f"The layer {layer.name()} is not valid!")
+
+                canvas.showLoading()
 
                 self.canvases.append(canvas)
 
@@ -252,24 +261,30 @@ class LayerGridView:
             self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
 
     def sync_zoom(self):
-        main_canvas =  self.iface.mapCanvas()
+        main_canvas = self.iface.mapCanvas()
         extent = main_canvas.extent()
         if self.canvases:
             for canvas in self.canvases:
                 canvas.setExtent(extent)
+                canvas.showLoading()
                 canvas.refresh()
+                canvas.repaint()
 
     def updateLayerVisibility(self):
         try:
             index = self.slider.value() - 1
+
             if self.current_layer_id:
                 QgsProject.instance().layerTreeRoot().findLayer(
                     self.current_layer_id
                 ).setItemVisibilityChecked(False)
 
             self.current_layer_id = self.layer_ids[index]
-            layer = QgsProject.instance().layerTreeRoot().findLayer(self.current_layer_id)
-            layer.setItemVisibilityChecked(True)
+
+            if self.current_layer_id:
+                layer = QgsProject.instance().layerTreeRoot().findLayer(self.current_layer_id)
+                layer.setItemVisibilityChecked(True)
+
         except Exception as e:
             msg = self.iface.messageBar().createMessage("updateLayerVisibility", f"Error -> {e}")
             self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
@@ -297,10 +312,10 @@ class LayerGridView:
 
             contentWidget = QWidget()
             contentLayout = QVBoxLayout(contentWidget)
-            self.layout = QGridLayout()  # This layout will contain your grid
+            self.layout = QGridLayout()
 
             contentLayout.addWidget(self.slider)
-            contentLayout.addLayout(self.layout)  # Assuming updateGrid will populate this
+            contentLayout.addLayout(self.layout)
 
             self.scrollArea = QScrollArea()
             self.scrollArea.setWidgetResizable(True)
@@ -311,7 +326,7 @@ class LayerGridView:
             # Connect the signal
             self.iface.mapCanvas().extentsChanged.connect(self.sync_zoom)
 
-            self.updateGrid(self.layers)  # This should populate 'self.layout'
+            self.updateGrid(self.layers)
 
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
             self.dockwidget.show()
