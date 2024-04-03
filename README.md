@@ -4,6 +4,8 @@
 
 The Layer Grid Plugin provides an intuitive dockable widget that presents a grid of map canvases, showcasing each layer sorted by a custom property, "date". This allows users to easily compare different layers side by side. Moreover, zooming or panning in the main map canvas will automatically sync the zoom and pan actions in the grid canvases, ensuring consistent visualization across all maps.
 
+![](screenshot.png)
+
 ## Features
 
 - **Synced View**: Automatically sync zoom and pan actions across main map and grid canvases.
