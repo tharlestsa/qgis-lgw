@@ -28,7 +28,7 @@ PY_FILES = \
 
 UI_FILES = layer_grid_view_dockwidget_base.ui
 
-EXTRAS = metadata.txt icon.png
+EXTRAS = metadata.txt icon.png LICENSE
 
 COMPILED_RESOURCE_FILES = resources.py
 
