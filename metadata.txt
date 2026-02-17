@@ -19,7 +19,17 @@ repository=https://github.com/tharlestsa/qgis-lgw
 # Recommended items:
 
 hasProcessingProvider=no
-changelog=See CHANGELOG.md for full details.
+changelog=
+    2.0.0 - On-the-fly CRS reprojection: layers with different CRS are
+        automatically reprojected to the project CRS. Plugin now uses
+        selected layers instead of visible layers, with an instructional
+        dialog when no layers are selected. Debounced zoom sync with QTimer
+        to reduce flickering. Removed slider dead code and hardcoded
+        EPSG:4326. Fixed mutable default args, signal lifecycle, and widget
+        cleanup. Replaced print() with QgsMessageLog. Modernized Makefile
+        with validate, publish, and symlink-aware deploy targets.
+    1.0.0 - Initial release with dockable grid widget, pan/zoom
+        synchronization, and loading indicator.
 
 # Tags are comma separated with spaces allowed
 tags=layers, grid, view
