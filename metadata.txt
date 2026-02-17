@@ -6,7 +6,7 @@
 name=Layer Grid View
 qgisMinimumVersion=3.0
 description=The Layer Grid Plugin provides an intuitive dockable widget that presents a grid of map canvases.
-version=1.0.0
+version=2.0.0
 author=Tharles de Sousa Andrade
 email=irtharles@gmail.com
 
@@ -19,8 +19,7 @@ repository=https://github.com/tharlestsa/qgis-lgw
 # Recommended items:
 
 hasProcessingProvider=no
-# Uncomment the following line and add your changelog:
-# changelog=
+changelog=See CHANGELOG.md for full details.
 
 # Tags are comma separated with spaces allowed
 tags=layers, grid, view
