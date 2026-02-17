@@ -1,6 +1,6 @@
 from qgis.gui import QgsMapCanvas
 from qgis.PyQt.QtCore import Qt
-from PyQt5.QtWidgets import QLabel, QVBoxLayout
+from qgis.PyQt.QtWidgets import QLabel, QVBoxLayout
 class CustomMapCanvas(QgsMapCanvas):
     def __init__(self, parent=None):
         super(CustomMapCanvas, self).__init__(parent)

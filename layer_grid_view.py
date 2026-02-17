@@ -21,14 +21,18 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QTimer
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QWidget, QAction, QLabel, QVBoxLayout, QGridLayout, QScrollArea, QSlider
-from qgis.core import Qgis, QgsProject
-from qgis.gui import QgsMapCanvas
+from qgis.PyQt.QtWidgets import (
+    QWidget, QAction, QLabel, QVBoxLayout, QGridLayout,
+    QScrollArea, QDialog, QDialogButtonBox, QHBoxLayout,
+)
+from qgis.core import (
+    Qgis, QgsProject, QgsCoordinateTransform, QgsMessageLog,
+)
 # Initialize Qt resources from file resources.py
 from .resources import *
-from .canvas import  CustomMapCanvas
+from .canvas import CustomMapCanvas
 
 # Import the code for the DockWidget
 from .layer_grid_view_dockwidget import LayerGridViewDockWidget
@@ -46,13 +50,11 @@ class LayerGridView:
             application at run time.
         :type iface: QgsInterface
         """
-        # Save reference to the QGIS interface
         self.iface = iface
-        self.slider = None
         self.canvases = []
         self.layers = []
-        self.layer_ids = []
-        self.current_layer_id = None
+        self._transform_cache = {}
+        self._sync_timer = None
 
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
@@ -72,15 +74,11 @@ class LayerGridView:
         # Declare instance attributes
         self.actions = []
         self.menu = self.tr(u'&Layer Grid View')
-        # TODO: We are going to let the user set this up in a future iteration
         self.toolbar = self.iface.addToolBar(u'LayerGridView')
         self.toolbar.setObjectName(u'LayerGridView')
 
-        #print "** INITIALIZING LayerGridView"
-
         self.pluginIsActive = False
         self.dockwidget = None
-
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -97,7 +95,6 @@ class LayerGridView:
         # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
         return QCoreApplication.translate('LayerGridView', message)
 
-
     def add_action(
         self,
         icon_path,
@@ -109,44 +106,7 @@ class LayerGridView:
         status_tip=None,
         whats_this=None,
         parent=None):
-        """Add a toolbar icon to the toolbar.
-
-        :param icon_path: Path to the icon for this action. Can be a resource
-            path (e.g. ':/plugins/foo/bar.png') or a normal file system path.
-        :type icon_path: str
-
-        :param text: Text that should be shown in menu items for this action.
-        :type text: str
-
-        :param callback: Function to be called when the action is triggered.
-        :type callback: function
-
-        :param enabled_flag: A flag indicating if the action should be enabled
-            by default. Defaults to True.
-        :type enabled_flag: bool
-
-        :param add_to_menu: Flag indicating whether the action should also
-            be added to the menu. Defaults to True.
-        :type add_to_menu: bool
-
-        :param add_to_toolbar: Flag indicating whether the action should also
-            be added to the toolbar. Defaults to True.
-        :type add_to_toolbar: bool
-
-        :param status_tip: Optional text to show in a popup when mouse pointer
-            hovers over the action.
-        :type status_tip: str
-
-        :param parent: Parent widget for the new action. Defaults None.
-        :type parent: QWidget
-
-        :param whats_this: Optional text to show in the status bar when the
-            mouse pointer hovers over the action.
-
-        :returns: The action that was created. Note that the action is also
-            added to self.actions list.
-        :rtype: QAction
-        """
+        """Add a toolbar icon to the toolbar."""
 
         icon = QIcon(icon_path)
         action = QAction(icon, text, parent)
@@ -171,7 +131,6 @@ class LayerGridView:
 
         return action
 
-
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
@@ -182,72 +141,118 @@ class LayerGridView:
             callback=self.run,
             parent=self.iface.mainWindow())
 
-    #--------------------------------------------------------------------------
-
     def onClosePlugin(self):
-        """Cleanup necessary items here when plugin dockwidget is closed"""
+        """Cleanup necessary items here when plugin dockwidget is closed."""
 
-        #print "** CLOSING LayerGridView"
+        # Disconnect signals
+        try:
+            self.iface.mapCanvas().extentsChanged.disconnect(self._on_extent_changed)
+        except TypeError:
+            pass
+        try:
+            QgsProject.instance().crsChanged.disconnect(self._on_project_crs_changed)
+        except TypeError:
+            pass
 
-        # disconnects
-        self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+        if self.dockwidget:
+            self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
 
-        # remove this statement if dockwidget is to remain
-        # for reuse if plugin is reopened
-        # Commented next statement since it causes QGIS crashe
-        # when closing the docked window:
-        # self.dockwidget = None
+        # Stop pending sync timer
+        if self._sync_timer and self._sync_timer.isActive():
+            self._sync_timer.stop()
 
+        # Clean up canvases
+        for canvas in self.canvases:
+            canvas.deleteLater()
+        self.canvases = []
+        self.layers = []
+        self._transform_cache.clear()
+
+        if self.dockwidget:
+            self.dockwidget.hide()
+        self.dockwidget = None
         self.pluginIsActive = False
-
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
+        if hasattr(self.iface, 'removePluginMenu'):
+            for action in self.actions:
+                self.iface.removePluginMenu(
+                    self.tr(u'&Layer Grid View'),
+                    action)
+                self.iface.removeToolBarIcon(action)
 
-        #print "** UNLOAD LayerGridView"
+            if self.toolbar is not None:
+                del self.toolbar
+        else:
+            QgsMessageLog.logMessage(
+                "QgsInterface does not have the method removePluginMenu",
+                'LayerGrid', Qgis.Warning
+            )
 
-        for action in self.actions:
-            self.iface.removePluginMenu(
-                self.tr(u'&Layer Grid View'),
-                action)
-            self.iface.removeToolBarIcon(action)
-        # remove the toolbar
-        del self.toolbar
+    def _transform_extent(self, extent, src_crs, dst_crs):
+        """Transform extent between CRSs, with cached transform."""
+        if not src_crs.isValid() or not dst_crs.isValid():
+            return extent
+        if src_crs == dst_crs:
+            return extent
 
-    #--------------------------------------------------------------------------
+        cache_key = (src_crs.authid(), dst_crs.authid())
+        if cache_key not in self._transform_cache:
+            self._transform_cache[cache_key] = QgsCoordinateTransform(
+                src_crs, dst_crs, QgsProject.instance()
+            )
+
+        try:
+            return self._transform_cache[cache_key].transformBoundingBox(extent)
+        except Exception:
+            QgsMessageLog.logMessage(
+                f"Transform failed: {src_crs.authid()} -> {dst_crs.authid()}",
+                'LayerGrid', Qgis.Warning
+            )
+            return extent
+
     def updateGrid(self, layers):
+        """Build the grid of canvases, one per layer."""
         try:
             # Clear existing widgets from the layout
             for i in reversed(range(self.layout.count())):
                 widget = self.layout.itemAt(i).widget()
                 if widget is not None:
                     self.layout.removeWidget(widget)
-                    widget.setParent(None)
+                    widget.deleteLater()
 
             self.canvases = []
-            main_canvas = self.iface.mapCanvas()
-            extent = main_canvas.extent()
-            # Add sorted layers to layout
+            project_crs = QgsProject.instance().crs()
+
             row = 0
             col = 0
             for layer in layers:
+                if not layer.isValid():
+                    QgsMessageLog.logMessage(
+                        f"Layer '{layer.name()}' is not valid, skipping.",
+                        'LayerGrid', Qgis.Warning
+                    )
+                    continue
+
                 label = QLabel(layer.name())
                 label.setStyleSheet("font-size: 12px;")
                 label.setAlignment(Qt.AlignCenter)
+
                 canvas = CustomMapCanvas()
                 canvas.setCanvasColor(Qt.gray)
-                canvas.setExtent(extent)
+                canvas.setDestinationCrs(project_crs)
                 canvas.setLayers([layer])
+
+                # Transform layer extent to project CRS
+                layer_extent = self._transform_extent(
+                    layer.extent(), layer.crs(), project_crs
+                )
+                canvas.setExtent(layer_extent)
                 canvas.refresh()
-                canvas.repaint()
-
-                if not layer.isValid():
-                    print(f"The layer {layer.name()} is not valid!")
-
                 canvas.showLoading()
 
                 self.canvases.append(canvas)
-
                 self.layout.addWidget(label, row, col)
                 self.layout.addWidget(canvas, row + 1, col)
 
@@ -257,76 +262,167 @@ class LayerGridView:
                     row += 2
 
         except Exception as e:
-            msg = self.iface.messageBar().createMessage("GRID", f"Error -> {e}")
-            self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
+            if self.iface:
+                msg = self.iface.messageBar().createMessage("GRID", f"Error -> {e}")
+                self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
+            else:
+                QgsMessageLog.logMessage(
+                    f"Error in updateGrid: {e}", 'LayerGrid', Qgis.Critical
+                )
 
-    def sync_zoom(self):
-        main_canvas = self.iface.mapCanvas()
-        extent = main_canvas.extent()
-        if self.canvases:
+    def _on_extent_changed(self):
+        """Debounced handler - schedules sync_zoom after 50ms."""
+        if self._sync_timer and self._sync_timer.isActive():
+            self._sync_timer.stop()
+        self._sync_timer = QTimer()
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self._do_sync_zoom)
+        self._sync_timer.start(50)
+
+    def _do_sync_zoom(self):
+        """Sync extent from main canvas to all grid canvases."""
+        if not self.canvases or not self.iface:
+            return
+
+        try:
+            main_canvas = self.iface.mapCanvas()
+            main_extent = main_canvas.extent()
+            main_crs = main_canvas.mapSettings().destinationCrs()
+            project_crs = QgsProject.instance().crs()
+
+            extent = self._transform_extent(main_extent, main_crs, project_crs)
+
             for canvas in self.canvases:
                 canvas.setExtent(extent)
-                canvas.showLoading()
                 canvas.refresh()
-                canvas.repaint()
-
-    def updateLayerVisibility(self):
-        try:
-            index = self.slider.value() - 1
-
-            if self.current_layer_id:
-                QgsProject.instance().layerTreeRoot().findLayer(
-                    self.current_layer_id
-                ).setItemVisibilityChecked(False)
-
-            self.current_layer_id = self.layer_ids[index]
-
-            if self.current_layer_id:
-                layer = QgsProject.instance().layerTreeRoot().findLayer(self.current_layer_id)
-                layer.setItemVisibilityChecked(True)
 
         except Exception as e:
-            msg = self.iface.messageBar().createMessage("updateLayerVisibility", f"Error -> {e}")
-            self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
-            pass
+            QgsMessageLog.logMessage(
+                f"Error syncing zoom: {e}", 'LayerGrid', Qgis.Warning
+            )
+
+    def _on_project_crs_changed(self):
+        """Update destination CRS on all grid canvases when project CRS changes."""
+        project_crs = QgsProject.instance().crs()
+        self._transform_cache.clear()
+        for canvas in self.canvases:
+            canvas.setDestinationCrs(project_crs)
+            canvas.refresh()
+
+    def _get_selected_layers(self):
+        """Return the layers currently selected in the Layers panel."""
+        return self.iface.layerTreeView().selectedLayers()
+
+    def _show_no_selection_dialog(self):
+        """Show an informational dialog when no layers are selected."""
+        dialog = QDialog(self.iface.mainWindow())
+        dialog.setWindowTitle('Layer Grid View')
+        dialog.setMinimumSize(520, 380)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 20)
+
+        # Icon + title row
+        header = QHBoxLayout()
+        icon_label = QLabel()
+        icon_label.setPixmap(
+            QIcon(':/plugins/layer_grid_view/icon.png').pixmap(40, 40)
+        )
+        title = QLabel('No layers selected')
+        title.setStyleSheet('font-size: 18px; font-weight: bold;')
+        header.addWidget(icon_label)
+        header.addWidget(title)
+        header.addStretch()
+        layout.addLayout(header)
+
+        # Instructions
+        instructions = QLabel(
+            'To use <b>Layer Grid View</b>, select one or more layers in the '
+            '<b>Layers</b> panel before opening the plugin.<br><br>'
+            '<b>How to select layers:</b>'
+            '<ol style="margin-top: 6px;">'
+            '<li style="margin-bottom: 8px;">'
+            'In the <b>Layers</b> panel (usually on the left side), '
+            'click on a layer name to select it.</li>'
+            '<li style="margin-bottom: 8px;">'
+            'To select <b>multiple layers</b>, hold <code>Ctrl</code> '
+            '(<code>Cmd</code> on macOS) and click on each layer '
+            'you want to include.</li>'
+            '<li style="margin-bottom: 8px;">'
+            'To select a <b>range</b> of consecutive layers, click the '
+            'first layer, then hold <code>Shift</code> and click the last one.</li>'
+            '<li style="margin-bottom: 8px;">'
+            'Once your layers are highlighted, open the plugin again via '
+            '<b>Plugins &gt; Layer Grid View</b>.</li>'
+            '</ol>'
+            'Each selected layer will be displayed in its own map canvas, '
+            'arranged in a synchronized grid. Layers with different CRS '
+            'are automatically reprojected to the project CRS.'
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet('font-size: 13px; line-height: 1.5;')
+        layout.addWidget(instructions)
+
+        layout.addStretch()
+
+        # OK button
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec_()
 
     def run(self):
-        if not self.pluginIsActive:
-            self.pluginIsActive = True
+        if self.pluginIsActive:
+            self.dockwidget.show()
+            return
 
+        selected_layers = self._get_selected_layers()
+
+        if not selected_layers:
+            self._show_no_selection_dialog()
+            return
+
+        self.pluginIsActive = True
+        self._transform_cache.clear()
+        self.canvases = []
+        self.layers = list(selected_layers)
+
+        QgsMessageLog.logMessage(
+            f"Building grid with {len(self.layers)} selected layer(s)",
+            'LayerGrid', Qgis.Info
+        )
+
+        try:
             if self.dockwidget is None:
                 self.dockwidget = LayerGridViewDockWidget()
 
             self.dockwidget.closingPlugin.connect(self.onClosePlugin)
 
-            self.layers = list(QgsProject.instance().mapLayers().values())
-
-            for layer in self.layers:
-                self.layer_ids.append(layer.id())
-
-            self.slider = QSlider(Qt.Horizontal)
-            self.slider.setTickInterval(1)
-            self.slider.setValue(0)
-            self.slider.setMaximum(len(self.layers))
-            self.slider.valueChanged.connect(self.updateLayerVisibility)
+            self.scrollArea = QScrollArea()
+            self.scrollArea.setWidgetResizable(True)
 
             contentWidget = QWidget()
             contentLayout = QVBoxLayout(contentWidget)
             self.layout = QGridLayout()
 
-            contentLayout.addWidget(self.slider)
             contentLayout.addLayout(self.layout)
-
-            self.scrollArea = QScrollArea()
-            self.scrollArea.setWidgetResizable(True)
             self.scrollArea.setWidget(contentWidget)
+            self.updateGrid(self.layers)
 
             self.dockwidget.setWidget(self.scrollArea)
-
-            # Connect the signal
-            self.iface.mapCanvas().extentsChanged.connect(self.sync_zoom)
-
-            self.updateGrid(self.layers)
+            self.iface.mapCanvas().extentsChanged.connect(self._on_extent_changed)
+            QgsProject.instance().crsChanged.connect(self._on_project_crs_changed)
 
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
             self.dockwidget.show()
+
+        except Exception as e:
+            if self.iface:
+                msg = self.iface.messageBar().createMessage("run", f"Error -> {e}")
+                self.iface.messageBar().pushWidget(msg, level=Qgis.Critical)
+            else:
+                QgsMessageLog.logMessage(
+                    f"Error in run: {e}", 'LayerGrid', Qgis.Critical
+                )
